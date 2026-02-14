@@ -13,10 +13,16 @@ Usage:
     # Detect objects in an image file
     detections = client.detect("photo.jpg")
     for d in detections:
-        print(f"{d['class_name']} ({d['confidence']:.2f}) at [{d['bbox']['x1']:.0f}, {d['bbox']['y1']:.0f}, {d['bbox']['x2']:.0f}, {d['bbox']['y2']:.0f}]")
+        print(f"{d['class_name']} ({d['confidence']:.2f})")
 
-    # Detect with a specific model and confidence threshold
-    detections = client.detect("photo.jpg", model="yolov8s", conf=0.5)
+    # Detect with segmentation masks (polygon format)
+    result = client.detect_full("photo.jpg", model="yolov8n-seg", return_masks=True)
+    for d in result["detections"]:
+        print(f"{d['class_name']}: mask polygons = {len(d.get('mask', []))}")
+
+    # Detect with masks in different formats
+    result = client.detect_full("photo.jpg", model="yolov8n-seg", return_masks=True, mask_format="rle")
+    result = client.detect_full("photo.jpg", model="yolov8n-seg", return_masks=True, mask_format="bitmap")
 """
 
 import base64
@@ -48,14 +54,22 @@ class YOLOClient:
         r.raise_for_status()
         return r.json()
 
+    def _encode_image(self, image) -> str:
+        """Encode image to base64 from file path, bytes, or pass through if already base64."""
+        if isinstance(image, (str, Path)):
+            return base64.b64encode(Path(image).read_bytes()).decode()
+        elif isinstance(image, bytes):
+            return base64.b64encode(image).decode()
+        return image  # assume already base64
+
     def detect(
         self,
-        image: str | bytes | Path,
+        image,
         model: str = "yolov8n",
         conf: float = 0.25,
     ) -> list[dict]:
         """
-        Run object detection on an image.
+        Run object detection on an image. Returns detections only.
 
         Args:
             image: File path (str/Path), raw bytes, or base64 string.
@@ -63,57 +77,62 @@ class YOLOClient:
             conf: Confidence threshold (0.0 - 1.0).
 
         Returns:
-            List of detections, each with: bbox, confidence, class_id, class_name
+            List of detections. Each detection has:
+                - bbox: {x1, y1, x2, y2}
+                - confidence: float
+                - class_id: int
+                - class_name: str
         """
-        # Encode image to base64
-        if isinstance(image, (str, Path)):
-            image_b64 = base64.b64encode(Path(image).read_bytes()).decode()
-        elif isinstance(image, bytes):
-            image_b64 = base64.b64encode(image).decode()
-        else:
-            image_b64 = image  # assume already base64
-
         payload = {
-            "image": image_b64,
+            "image": self._encode_image(image),
             "model": model,
             "conf": conf,
+            "return_masks": False,
         }
-
         r = requests.post(f"{self.base_url}/detect", json=payload, timeout=self.timeout)
         r.raise_for_status()
         return r.json()["detections"]
 
-    def detect_raw(
+    def detect_full(
         self,
-        image: str | bytes | Path,
+        image,
         model: str = "yolov8n",
         conf: float = 0.25,
+        return_masks: bool = False,
+        mask_format: str = "polygon",
     ) -> dict:
         """
-        Same as detect() but returns the full response including metadata.
+        Run detection/segmentation with full metadata.
+
+        Args:
+            image: File path (str/Path), raw bytes, or base64 string.
+            model: Model name. Use '-seg' models for segmentation (e.g. yolov8n-seg).
+            conf: Confidence threshold (0.0 - 1.0).
+            return_masks: If True and using a -seg model, include segmentation masks.
+            mask_format: 'polygon' (list of [x,y] points), 'rle' (run-length encoding), or 'bitmap' (base64 PNG).
 
         Returns:
-            dict with keys: detections, model, device, inference_ms, image_width, image_height
+            dict with keys:
+                - detections: list of dets (each with bbox, confidence, class_id, class_name, mask)
+                - model: str
+                - device: str (cuda/cpu)
+                - inference_ms: float
+                - image_width: int
+                - image_height: int
+                - has_masks: bool
         """
-        if isinstance(image, (str, Path)):
-            image_b64 = base64.b64encode(Path(image).read_bytes()).decode()
-        elif isinstance(image, bytes):
-            image_b64 = base64.b64encode(image).decode()
-        else:
-            image_b64 = image
-
         payload = {
-            "image": image_b64,
+            "image": self._encode_image(image),
             "model": model,
             "conf": conf,
+            "return_masks": return_masks,
+            "mask_format": mask_format,
         }
-
         r = requests.post(f"{self.base_url}/detect", json=payload, timeout=self.timeout)
         r.raise_for_status()
         return r.json()
 
 
 if __name__ == "__main__":
-    # Quick test
     client = YOLOClient()
     print("Health:", client.health())
